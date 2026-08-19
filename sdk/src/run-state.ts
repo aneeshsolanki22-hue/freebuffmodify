@@ -809,6 +809,27 @@ export function withAdditionalMessage({
   return newRunState
 }
 
+/**
+ * Cycle-safe JSON round-trip clone. Plain JSON.parse(JSON.stringify(x)) throws
+ * on cyclic structures — the in-memory session state carries live zod schemas
+ * (toolDefinitions.inputSchema), and zod v4 defs hold `_cachedInner` backrefs
+ * to their parent, which makes them cyclic. Repeats are dropped (undefined),
+ * which is lossless here: the persisted-state path already survives the same
+ * POJO shapes after an app restart.
+ */
+function jsonRoundTripClone<T>(value: T): T {
+  const seen = new WeakSet()
+  return JSON.parse(
+    JSON.stringify(value, (_key, v) => {
+      if (typeof v === 'object' && v !== null) {
+        if (seen.has(v)) return undefined
+        seen.add(v)
+      }
+      return v
+    }),
+  ) as T
+}
+
 export function withMessageHistory({
   runState,
   messages,
@@ -817,7 +838,7 @@ export function withMessageHistory({
   messages: Message[]
 }): RunState {
   // Deep copy
-  const newRunState = JSON.parse(JSON.stringify(runState)) as typeof runState
+  const newRunState = jsonRoundTripClone(runState)
 
   if (newRunState.sessionState) {
     newRunState.sessionState.mainAgentState.messageHistory = messages
@@ -845,9 +866,7 @@ export async function applyOverridesToSessionState(
   },
 ): Promise<SessionState> {
   // Deep clone to avoid mutating the original session state
-  const sessionState = JSON.parse(
-    JSON.stringify(baseSessionState),
-  ) as SessionState
+  const sessionState = jsonRoundTripClone(baseSessionState)
 
   // Apply maxAgentSteps override
   if (overrides.maxAgentSteps !== undefined) {
