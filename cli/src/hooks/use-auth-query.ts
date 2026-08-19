@@ -63,53 +63,17 @@ function isAuthenticationError(error: unknown): boolean {
  */
 export async function validateApiKey({
   apiKey,
-  getUserInfoFromApiKey = defaultGetUserInfoFromApiKey,
   logger = defaultLogger,
 }: ValidateAuthParams): Promise<ValidatedUserInfo> {
-  const requestedFields = ['id', 'email'] as const
-
-  try {
-    const authResult = await getUserInfoFromApiKey({
-      apiKey,
-      fields: requestedFields,
-      logger,
-    })
-
-    if (!authResult) {
-      logger.error('❌ API key validation failed - invalid credentials')
-      throw createAuthError('Invalid API key')
-    }
-
-    return authResult
-  } catch (error) {
-    const statusCode = getErrorStatusCode(error)
-
-    if (isAuthenticationError(error)) {
-      logger.error('❌ API key validation failed - authentication error')
-      // Rethrow the original error to preserve statusCode for higher layers
-      throw error
-    }
-
-    if (statusCode !== undefined && isRetryableStatusCode(statusCode)) {
-      logger.error(
-        {
-          error: error instanceof Error ? error.message : String(error),
-          statusCode,
-        },
-        '❌ API key validation failed - network error',
-      )
-      // Rethrow the original error to preserve statusCode for higher layers
-      throw error
-    }
-
-    // Unknown error - wrap with statusCode for consistency
-    logger.error(
-      {
-        error: error instanceof Error ? error.message : String(error),
-      },
-      '❌ API key validation failed - unknown error',
-    )
-    throw createServerError('Authentication failed')
+  // ponytail: no codebuff.com backend in this fork — every non-empty API key
+  // is accepted locally. Revisit if server-backed auth is ever re-added.
+  if (!apiKey) {
+    logger.error('❌ API key validation failed - no API key')
+    throw createAuthError('Invalid API key')
+  }
+  return {
+    id: `local-${getApiKeyHash(apiKey).slice(0, 12)}`,
+    email: 'local@example.com',
   }
 }
 

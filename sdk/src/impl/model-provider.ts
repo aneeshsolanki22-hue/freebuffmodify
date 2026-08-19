@@ -1,11 +1,16 @@
 /**
- * Builds the language model every request runs on: the Codebuff backend,
- * which forwards to OpenRouter.
+ * Builds the language model every request runs on: NaraRouter
+ * (https://router.naraya.ai/v1), an OpenAI-compatible gateway.
+ *
+ * Configure with env vars:
+ *   NARAROUTER_API_KEY   - your NaraRouter key (sk-nry-...)
+ *   NARAROUTER_BASE_URL  - optional override, default https://router.naraya.ai/v1
+ *   NARAROUTER_MODEL     - optional fixed model for every request; otherwise
+ *                          model IDs are auto-mapped by stripping the provider
+ *                          prefix (e.g. "deepseek/deepseek-v4-flash" ->
+ *                          "deepseek-v4-flash")
  */
 
-import path from 'path'
-
-import { BYOK_OPENROUTER_HEADER } from '@codebuff/common/constants/byok'
 import { FREEBUFF_ACTING_USER_HEADER } from '@codebuff/common/constants/freebuff-models'
 import { isTransientNetworkError } from '@codebuff/common/util/error'
 import {
@@ -14,8 +19,11 @@ import {
 } from '@codebuff/llm-providers/openai-compatible'
 import { APICallError } from 'ai'
 
-import { getWebsiteUrl } from '../constants'
-import { getByokOpenrouterApiKeyFromEnv } from '../env'
+import {
+  getNararouterApiKeyFromEnv,
+  getNararouterBaseUrlFromEnv,
+  getNararouterModelFromEnv,
+} from '../env'
 
 import type { LanguageModel } from 'ai'
 
@@ -124,8 +132,7 @@ function fetchWithRetryableNetworkErrors(
 }
 
 /**
- * Get the model for a request: one that routes through the Codebuff backend,
- * which forwards to OpenRouter.
+ * Get the model for a request: one that routes through NaraRouter.
  */
 export function getModelForRequest({
   apiKey,
@@ -139,24 +146,24 @@ export function getModelForRequest({
     },
   }
 
-  const openrouterApiKey = getByokOpenrouterApiKeyFromEnv()
+  const nararouterApiKey = getNararouterApiKeyFromEnv() ?? apiKey
+  const baseUrl = (getNararouterBaseUrlFromEnv() ?? 'https://router.naraya.ai/v1').replace(
+    /\/+$/,
+    '',
+  )
+  const nararouterModel =
+    getNararouterModelFromEnv() ?? model.slice(model.lastIndexOf('/') + 1)
 
-  return new OpenAICompatibleChatLanguageModel(model, {
-    provider: 'codebuff',
-    url: ({ path: endpoint }) =>
-      new URL(path.join('/api/v1', endpoint), getWebsiteUrl()).toString(),
+  return new OpenAICompatibleChatLanguageModel(nararouterModel, {
+    provider: 'nararouter',
+    url: ({ path: endpoint }) => `${baseUrl}${endpoint}`,
     headers: () => ({
-      Authorization: `Bearer ${apiKey}`,
-      'user-agent': `ai-sdk/openai-compatible/${VERSION}/codebuff`,
+      Authorization: `Bearer ${nararouterApiKey}`,
+      'user-agent': `ai-sdk/openai-compatible/${VERSION}/nararouter`,
       ...(userId ? { [FREEBUFF_ACTING_USER_HEADER]: userId } : {}),
-      ...(openrouterApiKey && { [BYOK_OPENROUTER_HEADER]: openrouterApiKey }),
     }),
     metadataExtractor: {
       extractMetadata: async ({ parsedBody }: { parsedBody: any }) => {
-        if (openrouterApiKey !== undefined) {
-          return { codebuff: { usage: openrouterUsage } }
-        }
-
         if (typeof parsedBody?.usage?.cost === 'number') {
           openrouterUsage.cost = parsedBody.usage.cost
         }
@@ -171,10 +178,6 @@ export function getModelForRequest({
       },
       createStreamExtractor: () => ({
         processChunk: (parsedChunk: any) => {
-          if (openrouterApiKey !== undefined) {
-            return
-          }
-
           if (typeof parsedChunk?.usage?.cost === 'number') {
             openrouterUsage.cost = parsedChunk.usage.cost
           }

@@ -101,118 +101,25 @@ async function fetchWithRetry(
 export async function getUserInfoFromApiKey<T extends UserColumn>(
   params: GetUserInfoFromApiKeyInput<T>,
 ): GetUserInfoFromApiKeyOutput<T> {
-  const { apiKey, fields, logger } = params
+  const { fields } = params
 
-  const cached = userInfoCache[apiKey]
-  if (cached === null) {
-    throw createAuthError()
-  }
-  if (
-    cached &&
-    fields.every((field) =>
-      Object.prototype.hasOwnProperty.call(cached, field),
-    )
-  ) {
-    return Object.fromEntries(fields.map((field) => [field, cached[field]])) as {
-      [K in T]: CachedUserInfo[K]
-    } as Awaited<GetUserInfoFromApiKeyOutput<T>>
-  }
+  // ponytail: no codebuff.com backend in this fork — synthesize a local user
+  // instead of validating against /api/v1/me. Revisit if server-backed auth
+  // is ever re-added.
+  const userInfo = {
+    id: 'local-user',
+    email: 'local@example.com',
+    discord_id: null,
+    stripe_customer_id: null,
+    banned: false,
+    created_at: new Date(),
+  } satisfies CachedUserInfo
 
-  const fieldsToFetch = cached
-    ? fields.filter(
-        (field) => !Object.prototype.hasOwnProperty.call(cached, field),
-      )
-    : fields
-
-  const urlParams = new URLSearchParams({
-    fields: fieldsToFetch.join(','),
-  })
-  const url = new URL(`/api/v1/me?${urlParams}`, getWebsiteUrl())
-
-  let response: Response
-  try {
-    response = await fetchWithRetry(
-      url,
-      {
-        method: 'GET',
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-        },
-      },
-      logger,
-    )
-  } catch (error) {
-    logger.error(
-      { error: getErrorObject(error), apiKey, fields },
-      'getUserInfoFromApiKey network error',
-    )
-    // Network-level failure: DNS, connection refused, timeout, etc.
-    throw createNetworkError('Network request failed')
-  }
-
-  if (response.status === 401 || response.status === 403 || response.status === 404) {
-    logger.error(
-      { apiKey, fields, status: response.status },
-      'getUserInfoFromApiKey authentication failed',
-    )
-    // Don't cache auth failures - allow retry with potentially updated credentials
-    delete userInfoCache[apiKey]
-    // If the server returns 404 for invalid credentials, surface as 401 to callers
-    const normalizedStatus = response.status === 404 ? 401 : response.status
-    throw createHttpError('Authentication failed', normalizedStatus)
-  }
-
-  if (response.status >= 500 && response.status <= 599) {
-    logger.error(
-      { apiKey, fields, status: response.status },
-      'getUserInfoFromApiKey server error',
-    )
-    throw createServerError('Server error', response.status)
-  }
-
-  if (!response.ok) {
-    logger.error(
-      { apiKey, fields, status: response.status },
-      'getUserInfoFromApiKey request failed',
-    )
-    throw createHttpError('Request failed', response.status)
-  }
-
-  const cachedBeforeMerge = userInfoCache[apiKey]
-  try {
-    const responseBody = await response.json()
-    const fetchedFields = responseBody as CachedUserInfo
-    userInfoCache[apiKey] = {
-      ...(cachedBeforeMerge ?? {}),
-      ...fetchedFields,
-    }
-  } catch (error) {
-    logger.error(
-      { error: getErrorObject(error), apiKey, fields },
-      'getUserInfoFromApiKey JSON parse error',
-    )
-    throw createHttpError('Failed to parse response', response.status)
-  }
-
-  const userInfo = userInfoCache[apiKey]
-  if (userInfo === null) {
-    throw createAuthError()
-  }
-  if (
-    !userInfo ||
-    !fields.every((field) =>
-      Object.prototype.hasOwnProperty.call(userInfo, field),
-    )
-  ) {
-    logger.error(
-      { apiKey, fields },
-      'getUserInfoFromApiKey: response missing required fields',
-    )
-    throw createHttpError('Request failed', response.status)
-  }
   return Object.fromEntries(
     fields.map((field) => [field, userInfo[field]]),
-  ) as Awaited<GetUserInfoFromApiKeyOutput<T>>
+  ) as {
+    [K in T]: CachedUserInfo[K]
+  } as Awaited<GetUserInfoFromApiKeyOutput<T>>
 }
 
 export async function fetchAgentFromDatabase(
@@ -305,200 +212,19 @@ export async function fetchAgentFromDatabase(
 export async function startAgentRun(
   params: ParamsOf<StartAgentRunFn>,
 ): ReturnType<StartAgentRunFn> {
-  const { apiKey, userId, agentId, ancestorRunIds, logger } = params
-
-  const url = new URL(`/api/v1/agent-runs`, getWebsiteUrl())
-
-  try {
-    const response = await fetchWithRetry(
-      url,
-      {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          ...(userId ? { [FREEBUFF_ACTING_USER_HEADER]: userId } : {}),
-        },
-        body: JSON.stringify({
-          action: 'START',
-          agentId,
-          ancestorRunIds,
-        }),
-      },
-      logger,
-    )
-
-    if (!response.ok) {
-      const bodyText = await response.text().catch(() => '<unreadable body>')
-      logger.error({ response }, 'startAgentRun request failed')
-      // The passed-in `logger` may silently drop unallowlisted error events
-      // (see freebuff/web/src/server/agent-runner/logger.ts), which turns a
-      // real failure here into an opaque "Failed to start agent run" with no
-      // way to diagnose it. Always surface the raw HTTP status/body too.
-      console.error('[startAgentRun] request failed', {
-        url: url.toString(),
-        status: response.status,
-        statusText: response.statusText,
-        body: bodyText.slice(0, 2000),
-      })
-      return null
-    }
-
-    const responseBody = await response.json()
-    if (!responseBody?.runId) {
-      logger.error(
-        { responseBody },
-        'no runId found from startAgentRun request',
-      )
-      console.error('[startAgentRun] no runId in response body', {
-        url: url.toString(),
-        responseBody,
-      })
-    }
-    return responseBody?.runId ?? null
-  } catch (error) {
-    logger.error(
-      { error: getErrorObject(error), agentId },
-      'startAgentRun error',
-    )
-    console.error('[startAgentRun] threw', {
-      url: url.toString(),
-      error: getErrorObject(error),
-    })
-    return null
-  }
+  // ponytail: no codebuff.com backend in this fork — runs are tracked locally
+  // only. Revisit if server-backed runs are ever re-added.
+  return `local-${crypto.randomUUID()}`
 }
 
 export async function finishAgentRun(
   params: ParamsOf<FinishAgentRunFn>,
 ): ReturnType<FinishAgentRunFn> {
-  const {
-    apiKey,
-    userId,
-    runId,
-    status,
-    totalSteps,
-    directCredits,
-    totalCredits,
-    errorMessage,
-    logger,
-  } = params
-  const steps = pendingAgentSteps.get(runId) ?? []
-  pendingAgentSteps.delete(runId)
-
-  const url = new URL(`/api/v1/agent-runs`, getWebsiteUrl())
-
-  try {
-    const response = await fetchWithRetry(
-      url,
-      {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          ...(userId ? { [FREEBUFF_ACTING_USER_HEADER]: userId } : {}),
-        },
-        body: JSON.stringify({
-          action: 'FINISH',
-          runId,
-          status,
-          totalSteps,
-          directCredits,
-          totalCredits,
-          // Truncate: errorMessage can include a full stack trace
-          errorMessage:
-            errorMessage === undefined
-              ? undefined
-              : truncateString(errorMessage, 5000),
-          steps,
-        }),
-      },
-      logger,
-    )
-
-    if (!response.ok) {
-      logger.error({ response }, 'finishAgentRun request failed')
-      return
-    }
-  } catch (error) {
-    logger.error(
-      { error: getErrorObject(error), runId, status },
-      'finishAgentRun error',
-    )
-  }
+  // ponytail: no codebuff.com backend in this fork — nothing to record.
 }
-
-const pendingAgentStepSchema = z.object({
-  id: z.string().uuid(),
-  stepNumber: z.number().int().nonnegative(),
-  credits: z.number().nonnegative().optional(),
-  childRunIds: z.array(z.string()).optional(),
-  messageId: z.string().nullable(),
-  status: z.enum(['running', 'completed', 'skipped']).optional(),
-  errorMessage: z.string().optional(),
-  startTime: z.string().datetime(),
-})
-type PendingAgentStep = z.infer<typeof pendingAgentStepSchema>
-
-const pendingAgentSteps = new Map<string, PendingAgentStep[]>()
-const MAX_PENDING_AGENT_RUNS = 1_000
 
 export async function addAgentStep(
   params: ParamsOf<AddAgentStepFn>,
 ): ReturnType<AddAgentStepFn> {
-  const id = crypto.randomUUID()
-  const startTime =
-    params.startTime instanceof Date ? params.startTime.toJSON() : null
-  const parsedStep = pendingAgentStepSchema.safeParse({
-    id,
-    stepNumber: params.stepNumber,
-    credits: params.credits,
-    childRunIds: params.childRunIds,
-    messageId: params.messageId,
-    status: params.status,
-    errorMessage: params.errorMessage,
-    startTime,
-  })
-  if (!parsedStep.success) {
-    params.logger.error(
-      {
-        agentRunId: params.agentRunId,
-        stepNumber: params.stepNumber,
-        validationError: parsedStep.error,
-      },
-      'addAgentStep received invalid step data',
-    )
-    return null
-  }
-  let entries = pendingAgentSteps.get(params.agentRunId)
-  if (!entries) {
-    if (pendingAgentSteps.size >= MAX_PENDING_AGENT_RUNS) {
-      const oldestRunId = pendingAgentSteps.keys().next().value
-      if (oldestRunId !== undefined) {
-        pendingAgentSteps.delete(oldestRunId)
-        params.logger.warn(
-          { evictedRunId: oldestRunId, maxPendingRuns: MAX_PENDING_AGENT_RUNS },
-          'Evicted abandoned agent-step buffer',
-        )
-      }
-    }
-    entries = []
-    pendingAgentSteps.set(params.agentRunId, entries)
-  } else {
-    // Refresh insertion order so the map cap evicts abandoned buffers before
-    // long-running agents that are still producing steps.
-    pendingAgentSteps.delete(params.agentRunId)
-    pendingAgentSteps.set(params.agentRunId, entries)
-  }
-  if (entries.length >= MAX_AGENT_STEP_ROWS) {
-    params.logger.warn(
-      {
-        agentRunId: params.agentRunId,
-        stepNumber: params.stepNumber,
-        maxSteps: MAX_AGENT_STEP_ROWS,
-      },
-      'Ignored agent step beyond the per-run buffer limit',
-    )
-    return null
-  }
-  entries.push(parsedStep.data)
-  return id
+  return `local-${crypto.randomUUID()}`
 }

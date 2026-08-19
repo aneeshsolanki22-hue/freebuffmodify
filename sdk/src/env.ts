@@ -53,3 +53,15 @@ export const getSystemProcessEnv = (): NodeJS.ProcessEnv => {
 export const getByokOpenrouterApiKeyFromEnv = (): string | undefined => {
   return process.env[BYOK_OPENROUTER_ENV_VAR]
 }
+
+export const getNararouterApiKeyFromEnv = (): string | undefined => {
+  return process.env['NARAROUTER_API_KEY']
+}
+
+export const getNararouterBaseUrlFromEnv = (): string | undefined => {
+  return process.env['NARAROUTER_BASE_URL']
+}
+
+export const getNararouterModelFromEnv = (): string | undefined => {
+  return process.env['NARAROUTER_MODEL']
+}
